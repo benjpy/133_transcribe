@@ -13,8 +13,8 @@ A powerful Streamlit application that transcribes video and audio files using Op
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/benjpy/transcribe-streamlit-app.git
-    cd transcribe-streamlit-app
+    git clone https://github.com/benjpy/133_transcribe.git
+    cd 133_transcribe
     ```
 
 2.  Install dependencies:
