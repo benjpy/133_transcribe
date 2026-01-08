@@ -85,28 +85,45 @@ with tab1:
     if 'gemini_results' in st.session_state:
         results = st.session_state['gemini_results']
         
+        # Ensure results is a dictionary and handle potential pydantic models or objects
+        if not isinstance(results, dict):
+            # If it's an object with attributes, we'll try to convert or use getattr
+            # But usually it's a dict or a pydantic model in genai sdk
+            try:
+                results_dict = results.model_dump()
+            except AttributeError:
+                results_dict = vars(results)
+        else:
+            results_dict = results
+
         if show_summary:
             st.subheader("Summary")
-            st.write(results.summary)
+            st.write(results_dict.get('summary', 'No summary available.'))
             st.markdown("---")
 
         st.subheader("Transcript")
         
         full_transcript_text = ""
+        segments = results_dict.get('segments', [])
         
         if show_simple:
-            simple_text = " ".join([seg.content for seg in results.segments])
+            simple_text = " ".join([seg.get('content', '') if isinstance(seg, dict) else getattr(seg, 'content', '') for seg in segments])
             st.text_area("Simple Transcript", simple_text, height=300)
             full_transcript_text = simple_text
         else:
             formatted_segments = []
-            for seg in results.segments:
+            for seg in segments:
+                # Handle both dict and object
+                s_speaker = seg.get('speaker', 'Unknown') if isinstance(seg, dict) else getattr(seg, 'speaker', 'Unknown')
+                s_timestamp = seg.get('timestamp', '--:--') if isinstance(seg, dict) else getattr(seg, 'timestamp', '--:--')
+                s_content = seg.get('content', '') if isinstance(seg, dict) else getattr(seg, 'content', '')
+                
                 line = ""
                 if show_timestamps:
-                    line += f"[{seg.timestamp}] "
+                    line += f"[{s_timestamp}] "
                 if show_diarization:
-                    line += f"**{seg.speaker}**: "
-                line += seg.content
+                    line += f"**{s_speaker}**: "
+                line += s_content
                 formatted_segments.append(line)
             
             transcript_display = "\n\n".join(formatted_segments)
