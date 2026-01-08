@@ -1,99 +1,151 @@
-import openai
+from google import genai
+from google.genai import types
 import os
-import math
-import tempfile
-from pydub import AudioSegment
 import streamlit as st
-import io
+import tempfile
+import yt_dlp
 
 def get_api_key():
-    """Retrieves API key from st.secrets or environment variables."""
+    """Retrieves Gemini API key from st.secrets or environment variables."""
     try:
-        if "OPENAI_API_KEY" in st.secrets:
-            return st.secrets["OPENAI_API_KEY"]
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
     except Exception:
         pass # Secrets file not found or other streamlit error, fallback to env vars
 
-    if os.getenv("OPENAI_API_KEY"):
-        return os.getenv("OPENAI_API_KEY")
+    if os.getenv("GEMINI_API_KEY"):
+        return os.getenv("GEMINI_API_KEY")
     else:
         return None
 
-def transcribe_audio(file_path, client):
-    """Transcribes a single audio file using OpenAI Whisper."""
-    with open(file_path, "rb") as audio_file:
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="text"
-        )
-    return transcript
+def get_gemini_client():
+    """Initializes and returns the Gemini client."""
+    api_key = get_api_key()
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
 
-def split_and_transcribe(file_path, client):
-    """Splits large audio files and transcribes chunks."""
-    audio = AudioSegment.from_file(file_path)
+def download_youtube_audio(url):
+    """Downloads audio from YouTube URL and returns the path to the temp file."""
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'm4a',
+        }],
+        'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
+
+def process_media_with_gemini(media_source, client, is_url=False):
+    """
+    Processes media (local file path or URL) using Gemini and returns structured JSON.
+    """
+    prompt = """
+    Process the audio file and generate a detailed transcription.
+
+    Requirements:
+    1. Identify distinct speakers (e.g., Speaker 1, Speaker 2, or names if context allows).
+    2. Provide accurate timestamps for each segment (Format: MM:SS).
+    3. Detect the primary language of each segment.
+    4. If the segment is in a language different than English, also provide the English translation.
+    """
+
+    if is_url:
+        # For URL, we use the FileData with the URL directly if supported, 
+        # but Gemini File API usually requires uploading or using a URI from GCS/etc.
+        # However, the user's template showed YOUTUBE_URL being used in FileData.
+        # Let's try that, but typically Gemini 2.x supports direct URI for some sources 
+        # or we might need to upload. The template example uses a URL directly.
+        file_part = types.Part(
+            file_data=types.FileData(
+                file_uri=media_source
+            )
+        )
+    else:
+        # For local file, we must upload it to Gemini's file service first
+        file_upload = client.files.upload(path=media_source)
+        file_part = types.Part(
+            file_data=types.FileData(
+                file_uri=file_upload.uri,
+                mime_type=file_upload.mime_type
+            )
+        )
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash", # Using flash for speed/cost
+        contents=[
+            types.Content(
+                parts=[
+                    file_part,
+                    types.Part(text=prompt)
+                ]
+            )
+        ],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "summary": types.Schema(
+                        type=types.Type.STRING,
+                        description="A concise summary of the audio content.",
+                    ),
+                    "segments": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="List of transcribed segments with speaker and timestamp.",
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "speaker": types.Schema(type=types.Type.STRING),
+                                "timestamp": types.Schema(type=types.Type.STRING),
+                                "content": types.Schema(type=types.Type.STRING),
+                                "language": types.Schema(type=types.Type.STRING),
+                                "language_code": types.Schema(type=types.Type.STRING),
+                                "translation": types.Schema(type=types.Type.STRING),
+                            },
+                            required=["speaker", "timestamp", "content", "language", "language_code"],
+                        ),
+                    ),
+                },
+                required=["summary", "segments"],
+            ),
+        ),
+    )
     
-    # 10 minutes in milliseconds
-    chunk_length_ms = 10 * 60 * 1000 
-    chunks = math.ceil(len(audio) / chunk_length_ms)
+    # If we uploaded a file, we should probably clean it up in Gemini if possible, 
+    # but the API doesn't always require immediate deletion. 
+    # The local file cleanup is handled in calling function.
     
-    full_transcript = []
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i in range(chunks):
-        start_time = i * chunk_length_ms
-        end_time = min((i + 1) * chunk_length_ms, len(audio))
-        
-        chunk = audio[start_time:end_time]
-        
-        # Create a temp file for the chunk
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_chunk:
-            chunk.export(temp_chunk.name, format="mp3")
-            temp_chunk_path = temp_chunk.name
-            
-        status_text.text(f"Transcribing part {i+1} of {chunks}...")
-        
-        try:
-            transcript_part = transcribe_audio(temp_chunk_path, client)
-            full_transcript.append(transcript_part)
-        finally:
-            os.remove(temp_chunk_path)
-            
-        progress_bar.progress((i + 1) / chunks)
-        
-    return "\n".join(full_transcript)
+    return response.parsed
 
 def summarize_text(text, num_words, client):
-    """Summarizes the text to approximately num_words."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant that summarizes text."},
-            {"role": "user", "content": f"Please summarize the following text in approximately {num_words} words:\n\n{text}"}
-        ]
+    """Summarizes text using Gemini."""
+    prompt = f"Please summarize the following text in approximately {num_words} words:\n\n{text}"
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[prompt]
     )
-    return response.choices[0].message.content
+    return response.text
 
 def extract_key_ideas(text, num_ideas, client):
-    """Extracts key ideas from the text."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant that identifies key ideas from text."},
-            {"role": "user", "content": f"Please extract the top {num_ideas} key ideas from the following text as a bulleted list:\n\n{text}"}
-        ]
+    """Extracts key ideas using Gemini."""
+    prompt = f"Please extract the top {num_ideas} key ideas from the following text as a bulleted list:\n\n{text}"
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[prompt]
     )
-    return response.choices[0].message.content
+    return response.text
 
 def ask_question(context_text, question, client):
-    """Asks a question about the context text."""
-    response = client.chat.completions.create(
-       model="gpt-4o-mini",
-       messages=[
-           {"role": "system", "content": "You are a helpful assistant. Answer the user's question based strictly on the provided context text. Be concise, clear, and direct."},
-           {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {question}"}
-       ]
-   )
-    return response.choices[0].message.content
+    """Asks a question about the context text using Gemini."""
+    prompt = f"You are a helpful assistant. Answer the user's question based strictly on the provided context text. Be concise, clear, and direct.\n\nContext:\n{context_text}\n\nQuestion: {question}"
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[prompt]
+    )
+    return response.text

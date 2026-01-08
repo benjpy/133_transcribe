@@ -1,8 +1,6 @@
 import streamlit as st
-import openai
 import os
 from dotenv import load_dotenv
-from pydub import AudioSegment
 import tempfile
 import io
 import utils
@@ -10,97 +8,123 @@ import utils
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client
-api_key = utils.get_api_key()
+# Initialize Gemini client
+client = utils.get_gemini_client()
 
-if not api_key:
-    st.error("OPENAI_API_KEY not found. Please set it in .env or Streamlit Cloud Secrets.")
+if not client:
+    st.error("GEMINI_API_KEY not found. Please set it in .env or Streamlit Cloud Secrets.")
     st.stop()
 
-client = openai.OpenAI(api_key=api_key)
+st.set_page_config(page_title="Gemini Transcriber", page_icon="🎙️")
 
-st.title("Video/Audio Transcriber & Summarizer 🎙️ 📝")
+st.title("Gemini Video/Audio Transcriber 🎙️ 📝")
 
 tab1, tab2 = st.tabs(["Transcribe Audio/Video", "Summarize Text File"])
 
 with tab1:
-    st.write("Upload a video or audio file to transcribe it using OpenAI's Whisper model.")
-    uploaded_file = st.file_uploader("Choose a media file", type=["mp3", "mp4", "wav", "m4a", "mpeg", "mpga", "webm"], key="media_uploader")
+    st.write("Process video or audio files using Google Gemini.")
+    
+    input_type = st.radio("Choose input source:", ["Upload File", "URL (YouTube, etc.)"])
+    
+    media_source = None
+    is_url = False
+    
+    if input_type == "Upload File":
+        uploaded_file = st.file_uploader("Choose a media file", type=["mp3", "mp4", "wav", "m4a", "mpeg", "mpga", "webm"], key="media_uploader")
+        if uploaded_file is not None:
+            # Save uploaded file to temp file
+            suffix = os.path.splitext(uploaded_file.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                media_source = tmp_file.name
+    else:
+        url_input = st.text_input("Enter Media URL (e.g., YouTube URL):")
+        if url_input:
+            media_source = url_input
+            is_url = True
 
-    if uploaded_file is not None:
-        if st.button("Transcribe", key="transcribe_btn"):
-            with st.spinner("Processing file..."):
-                # Save uploaded file to temp file
-                suffix = os.path.splitext(uploaded_file.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
+    st.markdown("### Options")
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        show_summary = st.checkbox("Summary on top", value=True)
+        show_diarization = st.checkbox("Diarization (Speaker IDs)", value=True)
+    with col_opt2:
+        show_timestamps = st.checkbox("Timestamps", value=True)
+        show_simple = st.checkbox("Simple Transcript", value=False)
 
-                converted_mp3_path = None
-                
+    if media_source:
+        if st.button("Process Media", key="process_btn"):
+            with st.spinner("Processing with Gemini..."):
                 try:
-                    # Convert to MP3 first to reduce size
-                    st.info("Converting file to audio (MP3)...")
-                    audio = AudioSegment.from_file(tmp_file_path)
+                    # If it's a URL, we might need to download it if Gemini doesn't support it directly
+                    # The template suggested YOUTUBE_URL can be used directly, but usually it requires local file.
+                    # Let's try to download it if it's a URL to be safe, or just pass it if Gemini 2.x handles it.
+                    # Actually, let's use the local file approach to ensure it works.
                     
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
-                        audio.export(tmp_mp3.name, format="mp3")
-                        converted_mp3_path = tmp_mp3.name
+                    actual_path = media_source
+                    if is_url:
+                        st.info("Downloading audio from URL...")
+                        actual_path = utils.download_youtube_audio(media_source)
                     
-                    # Check size of the converted MP3
-                    file_size_mb = os.path.getsize(converted_mp3_path) / (1024 * 1024)
+                    results = utils.process_media_with_gemini(actual_path, client, is_url=False)
                     
-                    if file_size_mb > 24: # Leave a little buffer for 25MB limit
-                        st.info(f"Audio file size is {file_size_mb:.2f} MB. Splitting and transcribing...")
-                        transcript_text = utils.split_and_transcribe(converted_mp3_path, client)
-                    else:
-                        st.info(f"Audio file size is {file_size_mb:.2f} MB. Transcribing directly...")
-                        transcript_text = utils.transcribe_audio(converted_mp3_path, client)
+                    st.success("Processing Complete!")
+                    st.session_state['gemini_results'] = results
                     
-                    st.success("Transcription Complete!")
-                    st.session_state['transcript_text'] = transcript_text
+                    # Clean up temp file if we downloaded it
+                    if is_url and os.path.exists(actual_path):
+                        os.remove(actual_path)
                     
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
                 finally:
-                    if os.path.exists(tmp_file_path):
-                        os.remove(tmp_file_path)
-                    if converted_mp3_path and os.path.exists(converted_mp3_path):
-                        os.remove(converted_mp3_path)
+                    # Clean up uploaded temp file
+                    if not is_url and media_source and os.path.exists(media_source):
+                        os.remove(media_source)
 
-    if 'transcript_text' in st.session_state:
-        st.subheader("Transcript")
-        st.text_area("Full Transcript", st.session_state['transcript_text'], height=300)
+    if 'gemini_results' in st.session_state:
+        results = st.session_state['gemini_results']
         
+        if show_summary:
+            st.subheader("Summary")
+            st.write(results.summary)
+            st.markdown("---")
+
+        st.subheader("Transcript")
+        
+        full_transcript_text = ""
+        
+        if show_simple:
+            simple_text = " ".join([seg.content for seg in results.segments])
+            st.text_area("Simple Transcript", simple_text, height=300)
+            full_transcript_text = simple_text
+        else:
+            formatted_segments = []
+            for seg in results.segments:
+                line = ""
+                if show_timestamps:
+                    line += f"[{seg.timestamp}] "
+                if show_diarization:
+                    line += f"**{seg.speaker}**: "
+                line += seg.content
+                formatted_segments.append(line)
+            
+            transcript_display = "\n\n".join(formatted_segments)
+            st.markdown(transcript_display)
+            full_transcript_text = "\n".join(formatted_segments)
+
         st.download_button(
             label="Download Transcript",
-            data=st.session_state['transcript_text'],
+            data=full_transcript_text,
             file_name="transcript.txt",
             mime="text/plain"
         )
         
-        st.markdown("---")
-        st.subheader("Summarize Transcript")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            num_words_tr = st.number_input("Approx. words for summary", min_value=50, max_value=2000, value=200, step=50, key="num_words_tr")
-        with col2:
-            num_ideas_tr = st.slider("Number of key ideas", min_value=1, max_value=20, value=10, key="num_ideas_tr")
-            
-        if st.button("Generate Summary & Key Ideas", key="sum_tr_btn"):
-            with st.spinner("Generating summary and key ideas..."):
-                summary = utils.summarize_text(st.session_state['transcript_text'], num_words_tr, client)
-                key_ideas = utils.extract_key_ideas(st.session_state['transcript_text'], num_ideas_tr, client)
-                
-                st.subheader("Summary")
-                st.write(summary)
-                
-                st.subheader("Key Ideas")
-                st.write(key_ideas)
+        # Store for "Ask a Question"
+        st.session_state['transcript_text'] = full_transcript_text
 
 with tab2:
-    st.write("Upload a text file to summarize it.")
+    st.write("Upload a text file to summarize it using Gemini.")
     uploaded_text_file = st.file_uploader("Choose a text file", type=["txt"], key="text_uploader")
     
     if uploaded_text_file is not None:
@@ -130,40 +154,17 @@ with tab2:
         st.markdown("---")
         st.header("Ask a Question 🙋")
         
-        # determine which context to use
         context_text = st.session_state.get('transcript_text', "")
         if 'file_text' in locals() and file_text:
              context_text = file_text
         
-        # Audio Input
-        audio_question = st.audio_input("Record your question")
-        # Text Input
-        text_question = st.text_input("Or type your question here")
+        text_question = st.text_input("Type your question here about the content:")
         
         if st.button("Ask Question", key="ask_btn"):
-             final_question = None
-             
-             if audio_question:
-                 with st.spinner("Transcribing your question..."):
-                     # Transcribe the audio question
-                     # save to temp
-                     suffix = os.path.splitext(audio_question.name)[1] if audio_question.name else ".wav"
-                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_audio_q:
-                         tmp_audio_q.write(audio_question.getvalue())
-                         tmp_audio_q_path = tmp_audio_q.name
-                     
-                     try:
-                         final_question = utils.transcribe_audio(tmp_audio_q_path, client)
-                         st.info(f"You asked: {final_question}")
-                     finally:
-                         os.remove(tmp_audio_q_path)
-             elif text_question:
-                 final_question = text_question
-                 
-             if final_question:
+             if text_question:
                  with st.spinner("Thinking..."):
-                     answer = utils.ask_question(context_text, final_question, client)
+                     answer = utils.ask_question(context_text, text_question, client)
                      st.subheader("Answer")
                      st.write(answer)
              else:
-                 st.warning("Please enter a question or record voice.")
+                 st.warning("Please enter a question.")
