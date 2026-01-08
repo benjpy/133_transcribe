@@ -53,14 +53,11 @@ def process_media_with_gemini(media_source, client, is_url=False):
     2. Provide accurate timestamps for each segment (Format: MM:SS).
     3. Detect the primary language of each segment.
     4. If the segment is in a language different than English, also provide the English translation.
+    5. Identify the primary emotion of the speaker in this segment. You MUST choose exactly one of the following: happy, sad, angry, neutral.
     """
 
     if is_url:
-        # For URL, we use the FileData with the URL directly if supported, 
-        # but Gemini File API usually requires uploading or using a URI from GCS/etc.
-        # However, the user's template showed YOUTUBE_URL being used in FileData.
-        # Let's try that, but typically Gemini 2.x supports direct URI for some sources 
-        # or we might need to upload. The template example uses a URL directly.
+        # Use URL directly via file_uri as in user template
         file_part = types.Part(
             file_data=types.FileData(
                 file_uri=media_source
@@ -77,7 +74,7 @@ def process_media_with_gemini(media_source, client, is_url=False):
         )
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash", # Using flash for speed/cost
+        model="gemini-2.0-flash", # Matching template model but note 2.5 flash might be internal/future
         contents=[
             types.Content(
                 parts=[
@@ -107,8 +104,12 @@ def process_media_with_gemini(media_source, client, is_url=False):
                                 "language": types.Schema(type=types.Type.STRING),
                                 "language_code": types.Schema(type=types.Type.STRING),
                                 "translation": types.Schema(type=types.Type.STRING),
+                                "emotion": types.Schema(
+                                    type=types.Type.STRING,
+                                    enum=["happy", "sad", "angry", "neutral"]
+                                ),
                             },
-                            required=["speaker", "timestamp", "content", "language", "language_code"],
+                            required=["speaker", "timestamp", "content", "language", "language_code", "emotion"],
                         ),
                     ),
                 },
@@ -116,10 +117,6 @@ def process_media_with_gemini(media_source, client, is_url=False):
             ),
         ),
     )
-    
-    # If we uploaded a file, we should probably clean it up in Gemini if possible, 
-    # but the API doesn't always require immediate deletion. 
-    # The local file cleanup is handled in calling function.
     
     return response.parsed
 

@@ -61,19 +61,15 @@ with tab1:
                     # Let's try to download it if it's a URL to be safe, or just pass it if Gemini 2.x handles it.
                     # Actually, let's use the local file approach to ensure it works.
                     
-                    actual_path = media_source
                     if is_url:
-                        st.info("Downloading audio from URL...")
-                        actual_path = utils.download_youtube_audio(media_source)
-                    
-                    results = utils.process_media_with_gemini(actual_path, client, is_url=False)
+                        # Process URL directly
+                        results = utils.process_media_with_gemini(media_source, client, is_url=True)
+                    else:
+                        # Process uploaded file
+                        results = utils.process_media_with_gemini(media_source, client, is_url=False)
                     
                     st.success("Processing Complete!")
                     st.session_state['gemini_results'] = results
-                    
-                    # Clean up temp file if we downloaded it
-                    if is_url and os.path.exists(actual_path):
-                        os.remove(actual_path)
                     
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
@@ -123,6 +119,13 @@ with tab1:
                     line += f"[{s_timestamp}] "
                 if show_diarization:
                     line += f"**{s_speaker}**: "
+                
+                # Use emotion if available
+                s_emotion = seg.get('emotion', '') if isinstance(seg, dict) else getattr(seg, 'emotion', '')
+                if s_emotion:
+                    emotion_emoji = {"happy": "😊", "sad": "😢", "angry": "😠", "neutral": "😐"}.get(s_emotion.lower(), "")
+                    line += f"({s_emotion} {emotion_emoji}) "
+                
                 line += s_content
                 formatted_segments.append(line)
             
