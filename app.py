@@ -120,12 +120,6 @@ with tab1:
                 if show_diarization:
                     line += f"**{s_speaker}**: "
                 
-                # Use emotion if available
-                s_emotion = seg.get('emotion', '') if isinstance(seg, dict) else getattr(seg, 'emotion', '')
-                if s_emotion:
-                    emotion_emoji = {"happy": "😊", "sad": "😢", "angry": "😠", "neutral": "😐"}.get(s_emotion.lower(), "")
-                    line += f"({s_emotion} {emotion_emoji}) "
-                
                 line += s_content
                 formatted_segments.append(line)
             

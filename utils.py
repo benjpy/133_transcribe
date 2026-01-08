@@ -53,7 +53,6 @@ def process_media_with_gemini(media_source, client, is_url=False):
     2. Provide accurate timestamps for each segment (Format: MM:SS).
     3. Detect the primary language of each segment.
     4. If the segment is in a language different than English, also provide the English translation.
-    5. Identify the primary emotion of the speaker in this segment. You MUST choose exactly one of the following: happy, sad, angry, neutral.
     """
 
     if is_url:
@@ -104,12 +103,8 @@ def process_media_with_gemini(media_source, client, is_url=False):
                                 "language": types.Schema(type=types.Type.STRING),
                                 "language_code": types.Schema(type=types.Type.STRING),
                                 "translation": types.Schema(type=types.Type.STRING),
-                                "emotion": types.Schema(
-                                    type=types.Type.STRING,
-                                    enum=["happy", "sad", "angry", "neutral"]
-                                ),
                             },
-                            required=["speaker", "timestamp", "content", "language", "language_code", "emotion"],
+                            required=["speaker", "timestamp", "content", "language", "language_code"],
                         ),
                     ),
                 },
