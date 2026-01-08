@@ -68,7 +68,7 @@ def process_media_with_gemini(media_source, client, is_url=False):
         )
     else:
         # For local file, we must upload it to Gemini's file service first
-        file_upload = client.files.upload(path=media_source)
+        file_upload = client.files.upload(file=media_source)
         file_part = types.Part(
             file_data=types.FileData(
                 file_uri=file_upload.uri,
